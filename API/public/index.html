@@ -12,3 +12,47 @@
   <script src="script.js"></script>
 </body>
 </html>
+
+<!-- <!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Robô Virtual</title>
+  <style>
+    body { text-align: center; background: #f1f1f1; font-family: sans-serif; }
+    #avatar { width: 300px; margin-top: 40px; }
+  </style>
+</head>
+<body>
+  <h1>Robô Virtual</h1>
+  <img id="avatar" src="avatar_neutro.png" alt="Robô Virtual">
+  <p>Emoção detectada: <span id="estado">Nenhuma</span></p>
+
+  <script>
+    const avatar = document.getElementById('avatar');
+    const estado = document.getElementById('estado');
+
+    const mapaEmocoes = {
+      "a1b2c3": { img: "avatar_feliz.png", sentimento: "Feliz" },
+      "d4e5f6": { img: "avatar_triste.png", sentimento: "Triste" },
+      "deadbeef": { img: "avatar_bravo.png", sentimento: "Bravo" },
+    };
+
+    const ws = new WebSocket('ws://localhost:3000');
+
+    ws.onmessage = (event) => {
+      const uid = event.data;
+      const emocao = mapaEmocoes[uid];
+
+      if (emocao) {
+        avatar.src = emocao.img;
+        estado.textContent = emocao.sentimento;
+      } else {
+        avatar.src = "avatar_neutro.png";
+        estado.textContent = "Desconhecida";
+      }
+    };
+  </script>
+</body>
+</html>
+-->

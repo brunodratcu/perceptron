@@ -1,3 +1,41 @@
+/*
+#include <SPI.h>
+#include <MFRC522.h>
+
+#define SS_PIN  5
+#define RST_PIN 22
+MFRC522 rfid(SS_PIN, RST_PIN);
+String lastUID = "";
+
+void setup() {
+  Serial.begin(115200);
+  SPI.begin();
+  rfid.PCD_Init();
+  delay(1000);
+  Serial.println("RFID iniciado");
+}
+
+void loop() {
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
+
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    uid += String(rfid.uid.uidByte[i] < 0x10 ? "0" : "");
+    uid += String(rfid.uid.uidByte[i], HEX);
+  }
+
+  if (uid != lastUID) {
+    lastUID = uid;
+    Serial.println(uid);  // envia UID via USB
+  }
+
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
+*/
+
+//
+
 #include <SPI.h>
 #include <MFRC522.h>
 #include <TFT_eSPI.h>

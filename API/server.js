@@ -36,3 +36,37 @@ function mapear(uid) {
   };
   return mapa[uid] || "Desconhecido";
 }
+/* 
+const express = require('express');
+const http = require('http');
+const { SerialPort } = require('serialport');
+const { ReadlineParser } = require('@serialport/parser-readline');
+const WebSocket = require('ws');
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+let currentUID = "";
+
+const port = new SerialPort({ path: '/dev/ttyUSB0', baudRate: 115200 });
+const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
+
+parser.on('data', (data) => {
+  console.log("UID recebido:", data.trim());
+  currentUID = data.trim();
+
+  // Envia para o frontend via WebSocket
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(currentUID);
+    }
+  });
+});
+
+app.use(express.static('public'));
+
+server.listen(3000, () => {
+  console.log('Servidor em http://localhost:3000');
+});
+*/
