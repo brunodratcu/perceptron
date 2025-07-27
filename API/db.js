@@ -10,4 +10,21 @@ db.serialize(() => {
   )`);
 });
 
+
+
+
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS respostas_binarias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pergunta_id INTEGER,
+    resposta TEXT, -- 'sim' ou 'nao'
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+
+
+
+
 module.exports = db;

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Dashboard Emocional</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h2>Relatório de Respostas Anônimas</h2>
+  <canvas id="grafico" width="400" height="200"></canvas>
+
+  <script>
+    fetch('/api/resumo')
+      .then(res => res.json())
+      .then(data => {
+        const ctx = document.getElementById('grafico').getContext('2d');
+        const chart = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: data.perguntas,
+            datasets: [{
+              label: 'Respostas Sim',
+              data: data.sim,
+              backgroundColor: 'green'
+            },
+            {
+              label: 'Respostas Não',
+              data: data.nao,
+              backgroundColor: 'red'
+            }]
+          }
+        });
+      });
+  </script>
+</body>
+</html>
