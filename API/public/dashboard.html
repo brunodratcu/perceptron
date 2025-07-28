@@ -2,32 +2,45 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <title>Dashboard Emocional</title>
+  <title>Dashboard de Sentimentos</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <h2>Relatório de Respostas Anônimas</h2>
-  <canvas id="grafico" width="400" height="200"></canvas>
+  <h1>Dashboard Anônimo - Respostas Sim/Não</h1>
+  <canvas id="grafico" width="800" height="400"></canvas>
+  <br>
+  <a href="/api/relatorio/csv" download>📄 Baixar CSV</a>
 
   <script>
     fetch('/api/resumo')
       .then(res => res.json())
       .then(data => {
-        const ctx = document.getElementById('grafico').getContext('2d');
-        const chart = new Chart(ctx, {
+        const labels = data.map(r => r.pergunta);
+        const sim = data.map(r => r.sim);
+        const nao = data.map(r => r.nao);
+
+        new Chart(document.getElementById("grafico"), {
           type: 'bar',
           data: {
-            labels: data.perguntas,
-            datasets: [{
-              label: 'Respostas Sim',
-              data: data.sim,
-              backgroundColor: 'green'
-            },
-            {
-              label: 'Respostas Não',
-              data: data.nao,
-              backgroundColor: 'red'
-            }]
+            labels: labels,
+            datasets: [
+              {
+                label: 'Sim',
+                backgroundColor: 'green',
+                data: sim
+              },
+              {
+                label: 'Não',
+                backgroundColor: 'red',
+                data: nao
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: {
+              y: { beginAtZero: true }
+            }
           }
         });
       });

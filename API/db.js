@@ -8,6 +8,15 @@ db.serialize(() => {
     emocao TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+
+
+  db.run(`CREATE TABLE IF NOT EXISTS respostas_anonimas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pergunta TEXT,
+    resposta TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
 });
 
 

@@ -75,6 +75,9 @@ const cors = require('cors');
 const app = express();
 const port = 3000;
 
+const fs = require('fs');
+const { format } = require('@fast-csv/format');
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
@@ -243,6 +246,55 @@ app.get('/api/relatorio', (req, res) => {
   });
 });
 
+app.get('/api/relatorio/csv', (req, res) => {
+  const filePath = './relatorio_respostas.csv';
+  const stream = fs.createWriteStream(filePath);
+  const csvStream = format({ headers: true });
+
+  csvStream.pipe(stream);
+
+  db.all(`SELECT * FROM respostas_anonimas ORDER BY timestamp DESC`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    rows.forEach(row => csvStream.write(row));
+    csvStream.end();
+
+    stream.on('finish', () => {
+      res.download(filePath, 'relatorio_respostas.csv');
+    });
+  });
+});
+
+
+// POST: Gravar resposta de uma pergunta anônima
+app.post('/api/respostas', (req, res) => {
+  const { pergunta, resposta } = req.body;
+  if (!pergunta || !resposta) {
+    return res.status(400).json({ error: "Campos obrigatórios: pergunta e resposta" });
+  }
+
+  db.run(`INSERT INTO respostas_anonimas (pergunta, resposta) VALUES (?, ?)`,
+    [pergunta, resposta],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.status(201).json({ id: this.lastID, pergunta, resposta });
+    });
+});
+// GET: Resumo de respostas (Sim/Não por pergunta)
+app.get('/api/resumo', (req, res) => {
+  const query = `
+    SELECT pergunta,
+           SUM(CASE WHEN resposta = 'Sim' THEN 1 ELSE 0 END) as sim,
+           SUM(CASE WHEN resposta = 'Não' THEN 1 ELSE 0 END) as nao
+    FROM respostas_anonimas
+    GROUP BY pergunta
+  `;
+
+  db.all(query, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
 
 
 
