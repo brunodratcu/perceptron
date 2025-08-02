@@ -1,307 +1,427 @@
-
-/* 
-const express = require('express');
-const http = require('http');
-const { SerialPort } = require('serialport');
-const { ReadlineParser } = require('@serialport/parser-readline');
-const WebSocket = require('ws');
-
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-let currentUID = "";
-
-const port = new SerialPort({ path: '/dev/ttyUSB0', baudRate: 115200 });
-const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
-
-parser.on('data', (data) => {
-  console.log("UID recebido:", data.trim());
-  currentUID = data.trim();
-
-  // Envia para o frontend via WebSocket
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(currentUID);
-    }
-  });
-});
-
-app.use(express.static('public'));
-
-server.listen(3000, () => {
-  console.log('Servidor em http://localhost:3000');
-});
-*/
-/*
-parser.on('data', (data) => {
-  const uid = data.trim();
-  currentUID = uid;
-
-  console.log("UID recebido:", uid);
-
-  // Mapeamento UID → Emoção
-  const mapa = {
-    "a1b2c3": "Feliz",
-    "d4e5f6": "Triste",
-    "deadbeef": "Bravo"
-  };
-
-  const emocao = mapa[uid] || "Desconhecida";
-
-  // Salvar no banco
-  db.run(`INSERT INTO historico_emocoes (uid, emocao) VALUES (?, ?)`, [uid, emocao], (err) => {
-    if (err) console.error("Erro ao inserir no banco:", err);
-    else console.log("Registrado:", uid, emocao);
-  });
-
-  // Enviar para a interface
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(uid);
-    }
-  });
-});
-*/
-
-
 const express = require('express');
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
 const WebSocket = require('ws');
 const db = require('./db');
 const cors = require('cors');
+const { Parser } = require('json2csv');
+const fs = require('fs');
+const { format } = require('@fast-csv/format');
 
 const app = express();
 const port = 3000;
-
-const fs = require('fs');
-const { format } = require('@fast-csv/format');
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Conexão com Serial
-const serial = new SerialPort({ path: '/dev/ttyUSB0', baudRate: 115200 });
-const parser = serial.pipe(new ReadlineParser({ delimiter: '\n' }));
+// Configuração da porta serial (opcional - descomente se usar ESP32)
+// const serial = new SerialPort({ path: '/dev/ttyUSB0', baudRate: 115200 });
+// const parser = serial.pipe(new ReadlineParser({ delimiter: '\n' }));
 
 // WebSocket Server
 const wss = new WebSocket.Server({ port: 8080 });
 
-// Mapeamento de UID para emoção
-function mapear(uid) {
+// Perguntas da pesquisa psicossocial
+const PERGUNTAS_PESQUISA = [
+  "Seu dia foi satisfatório?",
+  "Você teve energia suficiente?",
+  "Você foi produtivo hoje?",
+  "A carga de trabalho foi justa?",
+  "Você se sentiu valorizado?",
+  "A comunicação foi clara?",
+  "Os desafios foram estimulantes?",
+  "Você fez pausas adequadas?"
+];
+
+// Mapeamento de UID RFID para estado emocional inicial
+function mapearEstadoInicial(uid) {
   const mapa = {
+    "feliz": "Feliz",
+    "triste": "Triste", 
+    "surpreso": "Surpreso",
     "a1b2c3": "Feliz",
-    "deadbeef": "Triste"
+    "deadbeef": "Triste",
+    "cafe123": "Surpreso"
   };
-  return mapa[uid] || "Desconhecido";
+  return mapa[uid] || "Neutro";
 }
 
-// Ao receber dado do ESP32 pela serial
-parser.on('data', (data) => {
-  const uid = data.trim();
-  const emocao = mapear(uid);
+// Função para calcular diagnóstico emocional final
+function calcularDiagnostico(respostas, estadoInicial) {
+  const positivos = respostas.filter(r => r.resposta === "sim").length;
+  const negativos = respostas.filter(r => r.resposta === "nao").length;
+  const total = respostas.length;
+  
+  // Peso do estado inicial (30%) + peso das respostas (70%)
+  let scoreInicial = 0;
+  if (estadoInicial === "Feliz") scoreInicial = 0.3;
+  else if (estadoInicial === "Triste") scoreInicial = -0.3;
+  else if (estadoInicial === "Surpreso") scoreInicial = 0.1;
+  
+  let scoreRespostas = 0;
+  if (total > 0) {
+    scoreRespostas = ((positivos - negativos) / total) * 0.7;
+  }
+  
+  const scoreFinal = scoreInicial + scoreRespostas;
+  
+  if (scoreFinal > 0.2) return "Feliz";
+  else if (scoreFinal < -0.2) return "Triste";
+  else return "Neutro";
+}
 
-  // Salva no banco
-  db.run("INSERT INTO historico_emocoes (uid, emocao) VALUES (?, ?)", [uid, emocao]);
+// =====================================================
+// ROTAS REST API
+// =====================================================
 
-  // Envia para os clientes WebSocket
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({ uid, emocao }));
+// 1. RECEBER TAG RFID E CRIAR NOVA PESQUISA
+app.post('/api/rfid/scan', (req, res) => {
+  const { uid_rfid } = req.body;
+  
+  if (!uid_rfid) {
+    return res.status(400).json({ error: "Campo 'uid_rfid' é obrigatório" });
+  }
+  
+  const estadoInicial = mapearEstadoInicial(uid_rfid);
+  
+  // Criar nova pesquisa no banco
+  db.run("INSERT INTO pesquisas (uid_rfid, estado_inicial, status) VALUES (?, ?, 'iniciada')", 
+    [uid_rfid, estadoInicial], 
+    function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      
+      const pesquisaId = this.lastID;
+      
+      // Notificar via WebSocket
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ 
+            tipo: 'nova_pesquisa',
+            pesquisa_id: pesquisaId,
+            uid_rfid, 
+            estado_inicial: estadoInicial,
+            perguntas: PERGUNTAS_PESQUISA
+          }));
+        }
+      });
+      
+      res.status(201).json({ 
+        pesquisa_id: pesquisaId,
+        uid_rfid,
+        estado_inicial: estadoInicial,
+        status: 'iniciada',
+        perguntas: PERGUNTAS_PESQUISA
+      });
+    }
+  );
+});
+
+// 2. REGISTRAR RESPOSTA DE VOZ PARA UMA PERGUNTA
+app.post('/api/pesquisas/:pesquisa_id/resposta', (req, res) => {
+  const { pesquisa_id } = req.params;
+  const { pergunta_id, resposta, comando_voz } = req.body;
+  
+  if (!pergunta_id || !["sim", "nao"].includes(resposta)) {
+    return res.status(400).json({ 
+      error: "Campos obrigatórios: pergunta_id (1-8), resposta ('sim' ou 'nao')" 
+    });
+  }
+  
+  // Verificar se a pesquisa existe
+  db.get("SELECT * FROM pesquisas WHERE id = ?", [pesquisa_id], (err, pesquisa) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!pesquisa) return res.status(404).json({ error: "Pesquisa não encontrada" });
+    
+    // Registrar resposta
+    db.run("INSERT INTO respostas_pesquisa (pesquisa_id, pergunta_id, resposta, comando_voz) VALUES (?, ?, ?, ?)",
+      [pesquisa_id, pergunta_id, resposta, comando_voz || null],
+      function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        // Verificar se todas as perguntas foram respondidas
+        db.all("SELECT * FROM respostas_pesquisa WHERE pesquisa_id = ?", [pesquisa_id], (err, respostas) => {
+          if (err) return res.status(500).json({ error: err.message });
+          
+          let statusPesquisa = 'em_andamento';
+          let diagnosticoFinal = null;
+          
+          if (respostas.length >= PERGUNTAS_PESQUISA.length) {
+            // Pesquisa completa - calcular diagnóstico
+            diagnosticoFinal = calcularDiagnostico(respostas, pesquisa.estado_inicial);
+            statusPesquisa = 'concluida';
+            
+            // Atualizar status da pesquisa
+            db.run("UPDATE pesquisas SET status = ?, diagnostico_final = ? WHERE id = ?",
+              [statusPesquisa, diagnosticoFinal, pesquisa_id]);
+          }
+          
+          // Notificar via WebSocket
+          wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                tipo: 'resposta_registrada',
+                pesquisa_id,
+                pergunta_id,
+                resposta,
+                total_respostas: respostas.length,
+                status: statusPesquisa,
+                diagnostico_final: diagnosticoFinal
+              }));
+            }
+          });
+          
+          res.json({
+            id: this.lastID,
+            pesquisa_id,
+            pergunta_id,
+            resposta,
+            progresso: `${respostas.length}/${PERGUNTAS_PESQUISA.length}`,
+            status: statusPesquisa,
+            diagnostico_final: diagnosticoFinal
+          });
+        });
+      }
+    );
+  });
+});
+
+// 3. OBTER RESUMO DE UMA PESQUISA ESPECÍFICA
+app.get('/api/pesquisas/:id/resumo', (req, res) => {
+  const { id } = req.params;
+  
+  db.get("SELECT * FROM pesquisas WHERE id = ?", [id], (err, pesquisa) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!pesquisa) return res.status(404).json({ error: "Pesquisa não encontrada" });
+    
+    db.all("SELECT * FROM respostas_pesquisa WHERE pesquisa_id = ? ORDER BY pergunta_id", [id], (err, respostas) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      const resumo = {
+        pesquisa_id: id,
+        uid_rfid: pesquisa.uid_rfid,
+        estado_inicial: pesquisa.estado_inicial,
+        status: pesquisa.status,
+        diagnostico_final: pesquisa.diagnostico_final,
+        timestamp: pesquisa.timestamp,
+        perguntas: PERGUNTAS_PESQUISA.map((pergunta, index) => {
+          const resposta = respostas.find(r => r.pergunta_id === index + 1);
+          return {
+            id: index + 1,
+            pergunta,
+            resposta: resposta ? resposta.resposta : 'pendente',
+            comando_voz: resposta ? resposta.comando_voz : null,
+            timestamp: resposta ? resposta.timestamp : null
+          };
+        }),
+        estatisticas: {
+          total_perguntas: PERGUNTAS_PESQUISA.length,
+          respondidas: respostas.length,
+          sim: respostas.filter(r => r.resposta === 'sim').length,
+          nao: respostas.filter(r => r.resposta === 'nao').length
+        }
+      };
+      
+      res.json(resumo);
+    });
+  });
+});
+
+// 4. LISTAR TODAS AS PESQUISAS (DASHBOARD)
+app.get('/api/pesquisas', (req, res) => {
+  const { status } = req.query;
+  
+  let query = "SELECT * FROM pesquisas";
+  let params = [];
+  
+  if (status) {
+    query += " WHERE status = ?";
+    params.push(status);
+  }
+  
+  query += " ORDER BY timestamp DESC";
+  
+  db.all(query, params, (err, pesquisas) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    res.json({
+      total: pesquisas.length,
+      pesquisas: pesquisas.map(p => ({
+        id: p.id,
+        uid_rfid: p.uid_rfid,
+        estado_inicial: p.estado_inicial,
+        status: p.status,
+        diagnostico_final: p.diagnostico_final,
+        timestamp: p.timestamp
+      }))
+    });
+  });
+});
+
+// 5. ESTATÍSTICAS GERAIS PARA DASHBOARD
+app.get('/api/dashboard/estatisticas', (req, res) => {
+  // Estatísticas por diagnóstico final
+  db.all("SELECT diagnostico_final, COUNT(*) as total FROM pesquisas WHERE status = 'concluida' GROUP BY diagnostico_final", [], (err, diagnosticos) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    // Estatísticas por estado inicial
+    db.all("SELECT estado_inicial, COUNT(*) as total FROM pesquisas GROUP BY estado_inicial", [], (err, estadosIniciais) => {
+      if (err) return res.status(500).json({ error: err.message });
+      
+      // Estatísticas gerais
+      db.get("SELECT COUNT(*) as total, COUNT(CASE WHEN status = 'concluida' THEN 1 END) as concluidas FROM pesquisas", [], (err, geral) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        res.json({
+          geral: {
+            total_pesquisas: geral.total,
+            pesquisas_concluidas: geral.concluidas,
+            pesquisas_pendentes: geral.total - geral.concluidas
+          },
+          diagnosticos_finais: diagnosticos.reduce((acc, d) => {
+            acc[d.diagnostico_final || 'Em andamento'] = d.total;
+            return acc;
+          }, {}),
+          estados_iniciais: estadosIniciais.reduce((acc, e) => {
+            acc[e.estado_inicial] = e.total;
+            return acc;
+          }, {}),
+          timestamp: new Date().toISOString()
+        });
+      });
+    });
+  });
+});
+
+// 6. EXPORTAR RELATÓRIO CSV
+app.get('/api/relatorio/csv', (req, res) => {
+  const query = `
+    SELECT 
+      p.id as pesquisa_id,
+      p.uid_rfid,
+      p.estado_inicial,
+      p.status,
+      p.diagnostico_final,
+      p.timestamp as data_pesquisa,
+      rp.pergunta_id,
+      rp.resposta,
+      rp.comando_voz,
+      rp.timestamp as data_resposta
+    FROM pesquisas p
+    LEFT JOIN respostas_pesquisa rp ON p.id = rp.pesquisa_id
+    ORDER BY p.timestamp DESC, rp.pergunta_id ASC
+  `;
+  
+  db.all(query, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    const filePath = './relatorio_pesquisas.csv';
+    const fields = ['pesquisa_id', 'uid_rfid', 'estado_inicial', 'status', 'diagnostico_final', 'data_pesquisa', 'pergunta_id', 'resposta', 'comando_voz', 'data_resposta'];
+    
+    try {
+      const parser = new Parser({ fields });
+      const csv = parser.parse(rows);
+      
+      fs.writeFileSync(filePath, csv);
+      res.download(filePath, 'relatorio_pesquisas.csv');
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao gerar CSV: ' + error.message });
     }
   });
 });
 
-
-// 📘 ROTAS REST --------------------------------------------
-
-// GET: todos os registros
-app.get('/api/emocoes', (req, res) => {
-  db.all("SELECT * FROM historico_emocoes ORDER BY timestamp DESC", [], (err, rows) => {
+// 7. DELETAR PESQUISA
+app.delete('/api/pesquisas/:id', (req, res) => {
+  const { id } = req.params;
+  
+  // Deletar respostas primeiro
+  db.run("DELETE FROM respostas_pesquisa WHERE pesquisa_id = ?", [id], (err) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
-});
-
-// GET: um registro por ID
-app.get('/api/emocoes/:id', (req, res) => {
-  const id = req.params.id;
-  db.get("SELECT * FROM historico_emocoes WHERE id = ?", [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: 'Registro não encontrado' });
-    res.json(row);
-  });
-});
-
-// POST: adicionar manualmente um novo registro
-app.post('/api/emocoes', (req, res) => {
-  const { uid, emocao } = req.body;
-  if (!uid || !emocao) {
-    return res.status(400).json({ error: "Campos 'uid' e 'emocao' são obrigatórios" });
-  }
-  db.run("INSERT INTO historico_emocoes (uid, emocao) VALUES (?, ?)", [uid, emocao], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.status(201).json({ id: this.lastID, uid, emocao });
-  });
-});
-
-// DELETE: apagar um registro por ID
-app.delete('/api/emocoes/:id', (req, res) => {
-  const id = req.params.id;
-  db.run("DELETE FROM historico_emocoes WHERE id = ?", [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    if (this.changes === 0) return res.status(404).json({ error: "Registro não encontrado" });
-    res.json({ message: `Registro ${id} deletado com sucesso.` });
-  });
-});
-
-// DELETE: apagar todos os registros
-app.delete('/api/emocoes', (req, res) => {
-  db.run("DELETE FROM historico_emocoes", function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ message: "Todos os registros foram deletados." });
-  });
-});
-
-
-
-
-// API para registrar respostas binarias
-// POST: resposta binária do robô
-app.post('/api/responder', (req, res) => {
-  const { pergunta_id, resposta } = req.body;
-  if (!pergunta_id || !["sim", "nao"].includes(resposta)) {
-    return res.status(400).json({ erro: "Dados inválidos" });
-  }
-
-  db.run("INSERT INTO respostas_binarias (pergunta_id, resposta) VALUES (?, ?)", [pergunta_id, resposta], function(err) {
-    if (err) return res.status(500).json({ erro: err.message });
-    res.json({ id: this.lastID, pergunta_id, resposta });
-  });
-});
-
-
-
-
-
-
-//Rotas para resumo estatico (JSON para dashboard)
-// GET: resumo de respostas
-app.get('/api/resumo', (req, res) => {
-  const perguntas = [
-    "Dia foi satisfatório?",
-    "Teve energia suficiente?",
-    "Foi produtivo?",
-    "Carga de trabalho justa?",
-    "Sentiu-se valorizado?",
-    "Comunicação foi clara?",
-    "Desafios estimulantes?",
-    "Fez pausas adequadas?"
-  ];
-
-  const sim = Array(8).fill(0);
-  const nao = Array(8).fill(0);
-
-  db.all("SELECT pergunta_id, resposta FROM respostas_binarias", [], (err, rows) => {
-    if (err) return res.status(500).json({ erro: err.message });
-
-    rows.forEach(({ pergunta_id, resposta }) => {
-      if (resposta === "sim") sim[pergunta_id - 1]++;
-      if (resposta === "nao") nao[pergunta_id - 1]++;
-    });
-
-    res.json({ perguntas, sim, nao });
-  });
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Rota para geração de relatório
-const { Parser } = require('json2csv');
-const fs = require('fs');
-
-// GET: relatório para empresa (CSV)
-app.get('/api/relatorio', (req, res) => {
-  db.all("SELECT * FROM respostas_binarias", [], (err, rows) => {
-    if (err) return res.status(500).json({ erro: err.message });
-
-    const fields = ['id', 'pergunta_id', 'resposta', 'timestamp'];
-    const parser = new Parser({ fields });
-    const csv = parser.parse(rows);
-
-    fs.writeFileSync('relatorio.csv', csv);
-    res.download('relatorio.csv');
-  });
-});
-
-app.get('/api/relatorio/csv', (req, res) => {
-  const filePath = './relatorio_respostas.csv';
-  const stream = fs.createWriteStream(filePath);
-  const csvStream = format({ headers: true });
-
-  csvStream.pipe(stream);
-
-  db.all(`SELECT * FROM respostas_anonimas ORDER BY timestamp DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-
-    rows.forEach(row => csvStream.write(row));
-    csvStream.end();
-
-    stream.on('finish', () => {
-      res.download(filePath, 'relatorio_respostas.csv');
-    });
-  });
-});
-
-
-// POST: Gravar resposta de uma pergunta anônima
-app.post('/api/respostas', (req, res) => {
-  const { pergunta, resposta } = req.body;
-  if (!pergunta || !resposta) {
-    return res.status(400).json({ error: "Campos obrigatórios: pergunta e resposta" });
-  }
-
-  db.run(`INSERT INTO respostas_anonimas (pergunta, resposta) VALUES (?, ?)`,
-    [pergunta, resposta],
-    function(err) {
+    
+    // Deletar pesquisa
+    db.run("DELETE FROM pesquisas WHERE id = ?", [id], function(err) {
       if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: this.lastID, pergunta, resposta });
+      if (this.changes === 0) return res.status(404).json({ error: "Pesquisa não encontrada" });
+      
+      res.json({ message: `Pesquisa ${id} deletada com sucesso` });
     });
-});
-// GET: Resumo de respostas (Sim/Não por pergunta)
-app.get('/api/resumo', (req, res) => {
-  const query = `
-    SELECT pergunta,
-           SUM(CASE WHEN resposta = 'Sim' THEN 1 ELSE 0 END) as sim,
-           SUM(CASE WHEN resposta = 'Não' THEN 1 ELSE 0 END) as nao
-    FROM respostas_anonimas
-    GROUP BY pergunta
-  `;
-
-  db.all(query, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
   });
 });
 
-
-
-// -------------------------------------------------------------
-
-// Iniciar servidor
-app.listen(port, () => {
-  console.log(`API rodando em http://localhost:${port}`);
+// 8. ROTA PARA TESTAR MAPEAMENTO DE RFID
+app.get('/api/rfid/test/:uid', (req, res) => {
+  const { uid } = req.params;
+  const estado = mapearEstadoInicial(uid);
+  
+  res.json({
+    uid_rfid: uid,
+    estado_mapeado: estado,
+    todos_mapeamentos: {
+      "feliz": "Feliz",
+      "triste": "Triste", 
+      "surpreso": "Surpreso",
+      "a1b2c3": "Feliz",
+      "deadbeef": "Triste",
+      "cafe123": "Surpreso"
+    }
+  });
 });
 
+// =====================================================
+// HANDLERS PARA SERIAL PORT (OPCIONAL)
+// =====================================================
+
+// Descomente se estiver usando ESP32 via serial
+/*
+parser.on('data', (data) => {
+  const uid = data.trim();
+  
+  // Processar automaticamente quando receber UID da serial
+  const estadoInicial = mapearEstadoInicial(uid);
+  
+  db.run("INSERT INTO pesquisas (uid_rfid, estado_inicial, status) VALUES (?, ?, 'iniciada')", 
+    [uid, estadoInicial], 
+    function(err) {
+      if (err) {
+        console.error("Erro ao registrar pesquisa via serial:", err);
+        return;
+      }
+      
+      const pesquisaId = this.lastID;
+      console.log(`Nova pesquisa criada via RFID: ${pesquisaId} - UID: ${uid} - Estado: ${estadoInicial}`);
+      
+      // Notificar via WebSocket
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ 
+            tipo: 'nova_pesquisa_rfid',
+            pesquisa_id: pesquisaId,
+            uid_rfid: uid, 
+            estado_inicial: estadoInicial,
+            perguntas: PERGUNTAS_PESQUISA
+          }));
+        }
+      });
+    }
+  );
+});
+*/
+
+// =====================================================
+// INICIALIZAÇÃO DO SERVIDOR
+// =====================================================
+
+app.listen(port, () => {
+  console.log(`🚀 Servidor rodando em http://localhost:${port}`);
+  console.log(`📡 WebSocket rodando na porta 8080`);
+  console.log(`\n📋 Endpoints disponíveis:`);
+  console.log(`POST /api/rfid/scan - Registrar tag RFID e iniciar pesquisa`);
+  console.log(`POST /api/pesquisas/:id/resposta - Registrar resposta de voz`);
+  console.log(`GET  /api/pesquisas/:id/resumo - Obter resumo da pesquisa`);
+  console.log(`GET  /api/pesquisas - Listar todas as pesquisas`);
+  console.log(`GET  /api/dashboard/estatisticas - Estatísticas para dashboard`);
+  console.log(`GET  /api/relatorio/csv - Exportar relatório CSV`);
+  console.log(`GET  /api/rfid/test/:uid - Testar mapeamento RFID`);
+});
