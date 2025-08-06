@@ -38,8 +38,8 @@ O robô se conecta via **USB** ao computador (ESP32) e exibe seu "avatar virtual
 1. **Clone o repositório**:
 
 ```bash
-git clone https://github.com/seunome/robo-animatronico.git
-cd robo-animatronico
+git clone https://github.com/brunodratcu/perceptron.git
+cd magic_mirror_project
 ```
 
 2. **Instale as dependências**:
